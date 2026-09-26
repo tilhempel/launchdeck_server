@@ -5,17 +5,21 @@ use tokio::{net::{TcpListener, TcpStream}, sync::{broadcast}};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 use futures_util::{SinkExt, StreamExt};
 
+use pipewire as pw;
+
 mod utils;
 
 use utils::commands::volume;
 use utils::types;
 use std::sync::Mutex;
-use crate::utils::commands::{pipewire_client::{PipeWireEvent, VolumeEvent, run_pipewire_thread}, volume::Application};
+use crate::utils::commands::{pipewire_client::{PipeWireEvent, run_pipewire_thread}, volume::{Application, Device, VolumeCommand}};
 
 struct DeviceLists {
     application_list: Arc<Mutex<HashMap<u32, volume::Application>>>,
     sink_list: Arc<Mutex<HashMap<u32, volume::Device>>>,
-    source_list: Arc<Mutex<HashMap<u32, volume::Device>>>
+    source_list: Arc<Mutex<HashMap<u32, volume::Device>>>,
+    default_source: Arc<Mutex<String>>,
+    default_sink: Arc<Mutex<String>>
 }
 
 
@@ -24,8 +28,13 @@ async fn main() {
     let addr = "127.0.0.1:8080";
 
 
+    // channel to send data from pipewire thread back to this one to send as websocket msg
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<PipeWireEvent>();
     let (bcast_tx, _) = tokio::sync::broadcast::channel::<PipeWireEvent>(100);
+
+    // channel to send events into the pipewire thread
+    // (pw nodes only live inside the thread so in order to update them (valume, ...) we need to send events in to the thread)
+    let (pw_in_tx, pw_out_rx) = pw::channel::channel::<VolumeCommand>();
     
     let application_list: Arc<Mutex<HashMap<u32, volume::Application>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -33,14 +42,19 @@ async fn main() {
         Arc::new(Mutex::new(HashMap::new()));
     let source_list: Arc<Mutex<HashMap<u32, volume::Device>>> =
         Arc::new(Mutex::new(HashMap::new()));
+    let default_sink: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    let default_source: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+
     let application_list_for_pw = application_list.clone();
     let sink_list_for_pw = sink_list.clone();
     let source_list_for_pw = source_list.clone();
+    let def_sink_for_pw = default_sink.clone();
+    let def_source_for_pw = default_source.clone();
 
-    let devices = Arc::new(DeviceLists { application_list: application_list, sink_list: sink_list, source_list: source_list });
+    let devices = Arc::new(DeviceLists { application_list: application_list, sink_list: sink_list, source_list: source_list, default_source, default_sink });
 
     std::thread::spawn(move || {
-        if let Err(e) = run_pipewire_thread(tx, DeviceLists { application_list: application_list_for_pw, sink_list: sink_list_for_pw, source_list: source_list_for_pw }) {
+        if let Err(e) = run_pipewire_thread(tx, pw_out_rx, DeviceLists { application_list: application_list_for_pw, sink_list: sink_list_for_pw, source_list: source_list_for_pw, default_sink: def_sink_for_pw, default_source: def_source_for_pw}) {
             eprintln!("pipewire thread error: {e}");
         }
     });
@@ -60,13 +74,14 @@ async fn main() {
 
     while let Ok((stream, peer_addr)) = listener.accept().await {
         println!("New connection from: {}", peer_addr);
-        let rx = bcast_tx.subscribe();
+        let rx: broadcast::Receiver<PipeWireEvent> = bcast_tx.subscribe();
+        let pw_in_tx = pw_in_tx.clone();
 
-        tokio::spawn(handle_connection(stream, peer_addr, rx, devices.clone()));
+        tokio::spawn(handle_connection(stream, peer_addr, rx, pw_in_tx, devices.clone()));
     }
 }
 
-async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, mut rx: broadcast::Receiver<PipeWireEvent>, devices: Arc<DeviceLists>) {
+async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, mut rx: broadcast::Receiver<PipeWireEvent>, pw_in_tx: pw::channel::Sender<VolumeCommand>, devices: Arc<DeviceLists>) {
     let ws_stream = accept_async(stream)
         .await
         .expect("Error during WebSocket handshake");
@@ -78,8 +93,8 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, mut rx: bro
     let init_data = json!({
         "type": "InitData",
         "payload": {
-            "default_sink": volume::get_default_sink(),
-            "default_source": volume::get_default_source(),
+            "default_sink": &devices.default_sink.lock().unwrap().clone(), 
+            "default_source": &devices.default_sink.lock().unwrap().clone(),
             "sinks": &devices.sink_list.lock().unwrap().values().cloned().collect::<Vec<volume::Device>>(),
             "sources": &devices.source_list.lock().unwrap().values().cloned().collect::<Vec<volume::Device>>(),
             "applications": &devices.application_list.lock().unwrap().values().cloned().collect::<Vec<Application>>(),
@@ -115,7 +130,11 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, mut rx: bro
                     Some(Ok(Message::Text(text))) => {
 
                         match serde_json::from_str::<types::Message>(&text).unwrap() {
-                            types::Message::Volume(v) => volume::handle_volume(v),
+                            types::Message::Volume(v) => {
+                                let v_clone = v.clone();
+                                let _ = pw_in_tx.send(v);
+                                volume::handle_volume(v_clone)
+                            },
                             types::Message::Other(o) => {
                                 println!("other: {}", o.data)
                             }

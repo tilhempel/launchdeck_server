@@ -1,10 +1,10 @@
-use pipewire::{keys, types::ObjectType::{self}};
+use pipewire::{keys, node::NodeListener, types::ObjectType::{self}};
 use tokio::sync::mpsc::UnboundedSender;
 use pipewire as pw;
 use pw::spa::param::ParamType;
 use pw::spa::pod::deserialize::PodDeserializer;
 use pw::spa::pod::Value;
-use std::cell::RefCell;
+use std::{cell::RefCell, sync::mpsc::Receiver};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -13,7 +13,7 @@ use std::sync::Mutex;
 
 
 
-use crate::{DeviceLists, utils::commands::volume::{Application, CombType}};
+use crate::{DeviceLists, utils::commands::volume::{Application, CombType, VolumeCommand::{self, ToggleMuteSink}}};
 use crate::volume::Device;
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -42,7 +42,7 @@ struct DefaultNodeValue {
 }
 
 
-pub fn run_pipewire_thread(tx: UnboundedSender<PipeWireEvent>, device_lists: DeviceLists) -> Result<(), pw::Error> {
+pub fn run_pipewire_thread(tx: UnboundedSender<PipeWireEvent>, pw_in_rx: pw::channel::Receiver<VolumeCommand>, device_lists: DeviceLists) -> Result<(), pw::Error> {
     pw::init();
 
     let mainloop = pw::main_loop::MainLoopRc::new(None)?;
@@ -83,19 +83,23 @@ pub fn run_pipewire_thread(tx: UnboundedSender<PipeWireEvent>, device_lists: Dev
                         .expect("failed to bind metadata");
 
                     let tx_clone = tx.clone();
+                    let def_sink = Arc::clone(&device_lists.default_sink);
+                    let def_source = Arc::clone(&device_lists.default_source);
                     let listener = metadata
                         .add_listener_local()
                         .property(move |subject, key, _type_, value| {
                             match key {
                                 Some("default.audio.sink") => {
+                                    println!("hihihihi");
                                     let name = value
                                         .and_then(|v| serde_json::from_str::<DefaultNodeValue>(v).ok())
                                         .map(|d| d.name);
                                     let _ = tx_clone.send(PipeWireEvent::DefaultDevice(DefaultDeviceEvent {
                                         id: subject,
-                                        name: name.unwrap_or_default(), // no need for `.clone()` here, see below
+                                        name: name.clone().unwrap_or_default(),
                                         class: "Sink".to_string(),
                                     }));
+                                    *def_sink.lock().unwrap() = name.unwrap_or_default();
                                 }
                                 Some("default.audio.source") => {
                                     let name = value
@@ -103,9 +107,10 @@ pub fn run_pipewire_thread(tx: UnboundedSender<PipeWireEvent>, device_lists: Dev
                                         .map(|d| d.name);
                                     let _ = tx_clone.send(PipeWireEvent::DefaultDevice(DefaultDeviceEvent {
                                         id: subject,
-                                        name: name.unwrap_or_default(),
+                                        name: name.clone().unwrap_or_default(),
                                         class: "Source".to_string(),
                                     }));
+                                    *def_source.lock().unwrap() = name.unwrap_or_default();
                                 }
                                 _ => {}
                             }
@@ -252,6 +257,21 @@ pub fn run_pipewire_thread(tx: UnboundedSender<PipeWireEvent>, device_lists: Dev
         })
         .register();
 
+    
+    let nodes_for_channel = nodes.clone();
+    let cmd_receiver = pw_in_rx.attach(mainloop.loop_(), move |cmd| {
+        handle_volume_command(cmd, &nodes_for_channel);
+    });
     mainloop.run(); // blocks this thread forever
     Ok(())
+}
+
+
+fn handle_volume_command(cmd: VolumeCommand, nodes: &Rc<RefCell<HashMap<u32, (pw::node::Node, NodeListener)>>>) {
+    match cmd {
+        VolumeCommand::ToggleMuteSink { target } => {
+
+        }
+        _ => {}
+    }
 }

@@ -2,14 +2,14 @@ use std::{borrow::Cow, process::Command, ptr::null};
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum Target {
     String(String),
     ID(u32)
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "action", content = "data")]
 pub enum VolumeCommand {
     ChangeSinkVolume { target: Target, delta: i32 },
@@ -159,47 +159,6 @@ fn mute_source(mode: String, target: Target) {
         .arg("set-source-mute")
         .arg(t)
         .arg(mode).status();
-}
-
-pub fn get_default_sink() -> String {
-    // first get the default sink
-    let out = Command::new("pactl")
-        .arg("get-default-sink")
-        .output();
-
-    match out {
-        Ok(sink) => {
-            if !sink.status.success() {
-                eprintln!("Error getting default sink: {:#?}", String::from_utf8_lossy(&sink.stderr).to_string());
-                return String::new();
-            }
-            return String::from_utf8_lossy(&sink.stdout).to_string();
-        },
-        Err(e) => {
-            eprintln!("Error getting default sink: {}", e);
-            return String::new();
-        }
-    };
-}
-
-pub fn get_default_source() -> String {
-    let out = Command::new("pactl")
-        .arg("get-default-source")
-        .output();
-
-    match out {
-        Ok(source) => {
-            if !source.status.success() {
-                eprintln!("Error getting default source: {:#?}", String::from_utf8_lossy(&source.stderr).to_string());
-                return String::new();
-            }
-            return String::from_utf8_lossy(&source.stdout).to_string();
-        },
-        Err(e) => {
-            eprintln!("Error getting default source: {}", e);
-            return String::new();
-        }
-    }
 }
 
 pub fn handle_volume(p: VolumeCommand) {
