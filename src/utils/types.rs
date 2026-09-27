@@ -1,12 +1,12 @@
 use serde::{self, Deserialize, Serialize};
 
-use crate::volume;
+use crate::utils::commands::pipewire_client::VolumeCommand;
 
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", content = "payload", rename_all = "lowercase")]
 pub enum Message {
-    Volume(volume::VolumeCommand),
+    Volume(VolumeCommand),
     Other(OtherPayload),
 }
 

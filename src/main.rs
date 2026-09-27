@@ -9,16 +9,15 @@ use pipewire as pw;
 
 mod utils;
 
-use utils::commands::volume;
 use utils::types;
 use std::sync::Mutex;
-use crate::utils::commands::{pipewire_client::{PipeWireEvent, run_pipewire_thread}, volume::{Application, Node, VolumeCommand}};
+use crate::utils::commands::pipewire_client::{Application, Node, PipeWireEvent, VolumeCommand, run_pipewire_thread};
 
 #[derive(Clone)]
 struct DeviceLists {
-    application_list: Arc<Mutex<HashMap<u32, volume::Application>>>,
-    sink_list: Arc<Mutex<HashMap<u32, volume::Node>>>,
-    source_list: Arc<Mutex<HashMap<u32, volume::Node>>>,
+    application_list: Arc<Mutex<HashMap<u32, Application>>>,
+    sink_list: Arc<Mutex<HashMap<u32, Node>>>,
+    source_list: Arc<Mutex<HashMap<u32, Node>>>,
     default_source: Arc<Mutex<String>>,
     default_sink: Arc<Mutex<String>>
 }
@@ -37,11 +36,11 @@ async fn main() {
     // (pw nodes only live inside the thread so in order to update them (valume, ...) we need to send events in to the thread)
     let (pw_in_tx, pw_out_rx) = pw::channel::channel::<VolumeCommand>();
     
-    let application_list: Arc<Mutex<HashMap<u32, volume::Application>>> =
+    let application_list: Arc<Mutex<HashMap<u32, Application>>> =
         Arc::new(Mutex::new(HashMap::new()));
-    let sink_list: Arc<Mutex<HashMap<u32, volume::Node>>> =
+    let sink_list: Arc<Mutex<HashMap<u32, Node>>> =
         Arc::new(Mutex::new(HashMap::new()));
-    let source_list: Arc<Mutex<HashMap<u32, volume::Node>>> =
+    let source_list: Arc<Mutex<HashMap<u32, Node>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let default_sink: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let default_source: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
@@ -96,8 +95,8 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, mut rx: bro
         "payload": {
             "default_sink": &devices.default_sink.lock().unwrap().clone(), 
             "default_source": &devices.default_sink.lock().unwrap().clone(),
-            "sinks": &devices.sink_list.lock().unwrap().values().cloned().collect::<Vec<volume::Node>>(),
-            "sources": &devices.source_list.lock().unwrap().values().cloned().collect::<Vec<volume::Node>>(),
+            "sinks": &devices.sink_list.lock().unwrap().values().cloned().collect::<Vec<Node>>(),
+            "sources": &devices.source_list.lock().unwrap().values().cloned().collect::<Vec<Node>>(),
             "applications": &devices.application_list.lock().unwrap().values().cloned().collect::<Vec<Application>>(),
         }
     });
