@@ -25,10 +25,12 @@ pub enum VolumeCommand {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Device {
+pub struct Node {
     pub name: String,
     pub description: String,
     pub id: u32,
+    pub device_id: u32,
+    pub device_route: u32,
     pub mute: Option<bool>,
     pub channel_volumes: Option<Vec<f32>>
 }
@@ -45,7 +47,7 @@ pub struct Application {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum CombType {
-    Device(Device),
+    Device(Node),
     Application(Application),
 }
 

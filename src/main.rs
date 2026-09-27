@@ -12,12 +12,13 @@ mod utils;
 use utils::commands::volume;
 use utils::types;
 use std::sync::Mutex;
-use crate::utils::commands::{pipewire_client::{PipeWireEvent, run_pipewire_thread}, volume::{Application, Device, VolumeCommand}};
+use crate::utils::commands::{pipewire_client::{PipeWireEvent, run_pipewire_thread}, volume::{Application, Node, VolumeCommand}};
 
+#[derive(Clone)]
 struct DeviceLists {
     application_list: Arc<Mutex<HashMap<u32, volume::Application>>>,
-    sink_list: Arc<Mutex<HashMap<u32, volume::Device>>>,
-    source_list: Arc<Mutex<HashMap<u32, volume::Device>>>,
+    sink_list: Arc<Mutex<HashMap<u32, volume::Node>>>,
+    source_list: Arc<Mutex<HashMap<u32, volume::Node>>>,
     default_source: Arc<Mutex<String>>,
     default_sink: Arc<Mutex<String>>
 }
@@ -38,9 +39,9 @@ async fn main() {
     
     let application_list: Arc<Mutex<HashMap<u32, volume::Application>>> =
         Arc::new(Mutex::new(HashMap::new()));
-    let sink_list: Arc<Mutex<HashMap<u32, volume::Device>>> =
+    let sink_list: Arc<Mutex<HashMap<u32, volume::Node>>> =
         Arc::new(Mutex::new(HashMap::new()));
-    let source_list: Arc<Mutex<HashMap<u32, volume::Device>>> =
+    let source_list: Arc<Mutex<HashMap<u32, volume::Node>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let default_sink: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let default_source: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
@@ -95,8 +96,8 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, mut rx: bro
         "payload": {
             "default_sink": &devices.default_sink.lock().unwrap().clone(), 
             "default_source": &devices.default_sink.lock().unwrap().clone(),
-            "sinks": &devices.sink_list.lock().unwrap().values().cloned().collect::<Vec<volume::Device>>(),
-            "sources": &devices.source_list.lock().unwrap().values().cloned().collect::<Vec<volume::Device>>(),
+            "sinks": &devices.sink_list.lock().unwrap().values().cloned().collect::<Vec<volume::Node>>(),
+            "sources": &devices.source_list.lock().unwrap().values().cloned().collect::<Vec<volume::Node>>(),
             "applications": &devices.application_list.lock().unwrap().values().cloned().collect::<Vec<Application>>(),
         }
     });
@@ -133,7 +134,7 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, mut rx: bro
                             types::Message::Volume(v) => {
                                 let v_clone = v.clone();
                                 let _ = pw_in_tx.send(v);
-                                volume::handle_volume(v_clone)
+                                // volume::handle_volume(v_clone)
                             },
                             types::Message::Other(o) => {
                                 println!("other: {}", o.data)

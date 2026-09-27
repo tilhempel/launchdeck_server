@@ -1,20 +1,19 @@
-use pipewire::{keys, node::NodeListener, types::ObjectType::{self}};
+use pipewire::{node::NodeListener, spa::{pod::{Object, Pod, Property, PropertyFlags, serialize::PodSerializer}, sys::{SPA_PARAM_Props, SPA_PROP_mute, SPA_PROP_softMute, SPA_TYPE_OBJECT_Props}}, types::ObjectType::{self}};
 use tokio::sync::mpsc::UnboundedSender;
 use pipewire as pw;
 use pw::spa::param::ParamType;
 use pw::spa::pod::deserialize::PodDeserializer;
 use pw::spa::pod::Value;
-use std::{cell::RefCell, sync::mpsc::Receiver};
+use std::{cell::RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
-use tokio::{net::{TcpListener, TcpStream}, sync::{broadcast}};
 use std::sync::Mutex;
 
 
 
-use crate::{DeviceLists, utils::commands::volume::{Application, CombType, VolumeCommand::{self, ToggleMuteSink}}};
-use crate::volume::Device;
+use crate::{DeviceLists, utils::commands::volume::{Application, CombType, Target, VolumeCommand::{self, ToggleMuteSink}}};
+use crate::volume::Node;
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "type", content = "payload")]
@@ -59,12 +58,15 @@ pub fn run_pipewire_thread(tx: UnboundedSender<PipeWireEvent>, pw_in_rx: pw::cha
     let nodes_clone = nodes.clone();
     let metadata_storage_clone = metadata_storage.clone();
 
-    let application_list_for_pw_clone = device_lists.application_list.clone();
+    let application_list_for_pw_clone = Arc::clone(&device_lists.application_list);
     let application_list_for_pw_clone_remove = Arc::clone(&device_lists.application_list);
     let sink_list_for_pw_clone = Arc::clone(&device_lists.sink_list);
     let sink_list_for_pw_clone_remove = Arc::clone(&device_lists.sink_list);
     let source_list_for_pw_clone = Arc::clone(&device_lists.source_list);
     let source_list_for_pw_clone_remove = Arc::clone(&device_lists.source_list);
+
+    let def_sink = Arc::clone(&device_lists.default_sink);
+    let def_source = Arc::clone(&device_lists.default_source);
 
 
     let _reg_listener = registry
@@ -83,8 +85,10 @@ pub fn run_pipewire_thread(tx: UnboundedSender<PipeWireEvent>, pw_in_rx: pw::cha
                         .expect("failed to bind metadata");
 
                     let tx_clone = tx.clone();
-                    let def_sink = Arc::clone(&device_lists.default_sink);
-                    let def_source = Arc::clone(&device_lists.default_source);
+                    
+                    let def_sink_c = Arc::clone(&def_sink);
+                    let def_source_c = Arc::clone(&def_source);
+                    let id = global.id;
                     let listener = metadata
                         .add_listener_local()
                         .property(move |subject, key, _type_, value| {
@@ -99,7 +103,7 @@ pub fn run_pipewire_thread(tx: UnboundedSender<PipeWireEvent>, pw_in_rx: pw::cha
                                         name: name.clone().unwrap_or_default(),
                                         class: "Sink".to_string(),
                                     }));
-                                    *def_sink.lock().unwrap() = name.unwrap_or_default();
+                                    *def_sink_c.lock().unwrap() = name.unwrap_or_default();
                                 }
                                 Some("default.audio.source") => {
                                     let name = value
@@ -110,7 +114,8 @@ pub fn run_pipewire_thread(tx: UnboundedSender<PipeWireEvent>, pw_in_rx: pw::cha
                                         name: name.clone().unwrap_or_default(),
                                         class: "Source".to_string(),
                                     }));
-                                    *def_source.lock().unwrap() = name.unwrap_or_default();
+                                    println!("{:#?}", id);
+                                    *def_source_c.lock().unwrap() = name.unwrap_or_default();
                                 }
                                 _ => {}
                             }
@@ -128,7 +133,7 @@ pub fn run_pipewire_thread(tx: UnboundedSender<PipeWireEvent>, pw_in_rx: pw::cha
                         return
                     };
 
-                    let id = global.id;
+                    let id: u32 = global.id;
                     let class = media_class.to_string();
 
 
@@ -147,12 +152,14 @@ pub fn run_pipewire_thread(tx: UnboundedSender<PipeWireEvent>, pw_in_rx: pw::cha
 
                     let description = props.get("node.description").unwrap_or("unknown").to_string();
 
-                    let d = Device {
+                    let d = Node {
                         name:name.clone(),
                         description: description.clone(),
                         id,
                         mute: None,
-                        channel_volumes: None
+                        channel_volumes: None,
+                        device_id: id_str_to_u32(props.get("device.id").unwrap_or("0")),
+                        device_route: 0
                     };
 
                     let a = Application {
@@ -164,6 +171,8 @@ pub fn run_pipewire_thread(tx: UnboundedSender<PipeWireEvent>, pw_in_rx: pw::cha
                         channel_volumes: None,
                         mute: None
                     };
+
+                    println!("{:#?}", props);
 
                     let tx = tx.clone(); // clone the Sender per-node, it's cheap (Arc internally)
 
@@ -243,7 +252,7 @@ pub fn run_pipewire_thread(tx: UnboundedSender<PipeWireEvent>, pw_in_rx: pw::cha
                     node.subscribe_params(&[ParamType::Props]);
                     nodes_clone.borrow_mut().insert(id, (node, listener));
                     }
-                ObjectType::Client => {
+                ObjectType::Device => {
 
                 }
                 _ => {}
@@ -257,21 +266,10 @@ pub fn run_pipewire_thread(tx: UnboundedSender<PipeWireEvent>, pw_in_rx: pw::cha
         })
         .register();
 
-    
-    let nodes_for_channel = nodes.clone();
-    let cmd_receiver = pw_in_rx.attach(mainloop.loop_(), move |cmd| {
-        handle_volume_command(cmd, &nodes_for_channel);
-    });
     mainloop.run(); // blocks this thread forever
     Ok(())
 }
 
-
-fn handle_volume_command(cmd: VolumeCommand, nodes: &Rc<RefCell<HashMap<u32, (pw::node::Node, NodeListener)>>>) {
-    match cmd {
-        VolumeCommand::ToggleMuteSink { target } => {
-
-        }
-        _ => {}
-    }
+fn id_str_to_u32(id: &str) -> u32 {
+    id.to_string().parse::<u32>().unwrap_or(0)
 }
