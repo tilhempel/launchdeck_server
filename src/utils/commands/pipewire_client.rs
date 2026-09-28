@@ -593,7 +593,7 @@ fn handle_volume_command(
         ),
         VolumeCommand::SetAppVolume { target, value } => with_app(
             nodes, &device_lists, target, move |node, _, _| {
-                let raw = ((value as f32) / 100.0).powi(3);
+                let raw = ((value as f32).clamp(0 as f32, 150 as f32 ) / 100.0).powi(3);
                 let volumes = vec![raw, raw];
                 set_node_props(&node, vec![Property{
                     key: SPA_PROP_channelVolumes,
@@ -608,7 +608,7 @@ fn handle_volume_command(
                         .as_ref()
                         .and_then(|v| v.iter().cloned().fold(None, |m: Option<f32>, x| Some(m.map_or(x, |m| m.max(x)))))
                         .map(|raw| raw.cbrt() * 100.0);
-                let raw = ((current_volume_percent.unwrap_or(100 as f32) + (delta as f32) ) / 100.0).powi(3);
+                let raw = ((current_volume_percent.unwrap_or(100 as f32) + (delta as f32) ).clamp(0 as f32, 150 as f32 ) / 100.0).powi(3);
                 let volumes = vec![raw, raw];
                 set_node_props(&node, vec![Property{
                     key: SPA_PROP_mute,
