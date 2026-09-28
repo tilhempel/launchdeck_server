@@ -7,6 +7,7 @@ use pw::spa::pod::{Object, Pod, Property, PropertyFlags, Value, ValueArray};
 use pw::types::ObjectType;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
+use std::cmp::max;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -63,6 +64,9 @@ pub enum VolumeCommand {
     MuteSource { target: Target },
     UnmuteSource { target: Target },
     ToggleMuteSource { target: Target },
+    ToggleAppMute { target: Target },
+    SetAppVolume { target: Target, value: u8 },
+    ChangeAppVolume { target: Target, delta: u8 }
 }
 // representation of a node (sink/source)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -577,6 +581,42 @@ fn handle_volume_command(
                 apply_volume(ctx, new_val);
             },
         ),
+
+        VolumeCommand::ToggleAppMute { target } => with_app(
+            nodes, &device_lists, target, move |node, current_mute, _| {
+                set_node_props(&node, vec![Property{
+                    key: SPA_PROP_mute,
+                    flags: PropertyFlags::empty(),
+                    value: Value::Bool(!current_mute.unwrap_or(false)),
+                }]);
+            }
+        ),
+        VolumeCommand::SetAppVolume { target, value } => with_app(
+            nodes, &device_lists, target, move |node, _, _| {
+                let raw = ((value as f32) / 100.0).powi(3);
+                let volumes = vec![raw, raw];
+                set_node_props(&node, vec![Property{
+                    key: SPA_PROP_channelVolumes,
+                    flags: PropertyFlags::empty(),
+                    value: Value::ValueArray(ValueArray::Float(volumes))
+                }]);
+            }
+        ),
+        VolumeCommand::ChangeAppVolume { target, delta } => with_app(
+            nodes, &device_lists, target, move |node, _, current_volume| {
+                let current_volume_percent = current_volume
+                        .as_ref()
+                        .and_then(|v| v.iter().cloned().fold(None, |m: Option<f32>, x| Some(m.map_or(x, |m| m.max(x)))))
+                        .map(|raw| raw.cbrt() * 100.0);
+                let raw = ((current_volume_percent.unwrap_or(100 as f32) + (delta as f32) ) / 100.0).powi(3);
+                let volumes = vec![raw, raw];
+                set_node_props(&node, vec![Property{
+                    key: SPA_PROP_mute,
+                    flags: PropertyFlags::empty(),
+                    value: Value::ValueArray(ValueArray::Float(volumes))
+                }]);
+            }
+        ),
     }
 }
 
@@ -620,6 +660,48 @@ fn with_source(
     with_device_target(
         nodes, devices, active_routes, node_device_join, &device_lists.source_list, target, default_name, f,
     );
+}
+
+fn with_app(
+    nodes: &Rc<RefCell<HashMap<u32, (Rc<pw::node::Node>, pw::node::NodeListener)>>>,
+    device_lists: &DeviceLists,
+    target: Target,
+    f: impl FnOnce(Rc<pw::node::Node>, Option<bool>, Option<Vec<f32>>)
+) {
+    let id = match target {
+        Target::ID(id) => {
+            id
+        },
+        Target::String(s) => {
+            let t = device_lists.application_list
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|(_, dev)| dev.app_name == s)
+                    .map(|(id, _)| *id);
+            match t {
+                Some(id) => {
+                    id
+                },
+                None => {
+                    eprintln!("App ID not found: {}", s);
+                    return;
+                }
+            }
+        }
+    };
+
+    let current_mute = device_lists.application_list.lock().unwrap().get(&id).and_then(|a| a.mute);
+    let current_volumes = device_lists.application_list.lock().unwrap().get(&id).and_then(|a| a.channel_volumes.clone());
+
+    let node: Option<Rc<pw::node::Node>> = {
+        let nodes_ref = nodes.borrow();
+        nodes_ref.get(&id).map(|(n, _)| Rc::clone(n))
+    };
+    match node {
+        Some(n) => f(n, current_mute, current_volumes),
+        None => eprintln!("Node not found. ID: {}", id),
+    }
 }
 
 fn with_device_target(
